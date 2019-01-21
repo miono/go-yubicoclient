@@ -28,9 +28,9 @@ func New(apiAccount string, apiSecret string, apiServers []string, uri string) (
 	}, nil
 }
 
-// NewDefaultClient returns a new instance of a default client with the default API-servers
+// DefaultClient returns a new instance of a default client with the default API-servers
 func DefaultClient(apiAccount string, apiSecret string) (*Client, error) {
-	yc, err := New(apiAccount, apiSecret, []string{"https://api.yubico.com", "https://api2.yubico.com"}, "/wsapi/2.0/verify")
+	yc, err := New(apiAccount, apiSecret, []string{"http://flaffapuppakungballe.com", "http://lagga.se", "https://api.yubico.com", "https://api2.yubico.com", "https://api3.yubico.com", "https://api4.yubico.com", "https://api5.yubico.com"}, "/wsapi/2.0/verify")
 	if err != nil {
 		panic(err)
 	}
@@ -42,23 +42,42 @@ func (c *Client) Verify(OTP string) (bool, error) {
 	// Build the requests
 	reqs, _ := c.buildRequests(OTP)
 	responseChannel := make(chan yubicloudResponse)
+	errorChannel := make(chan error)
 	ctx, cancel := context.WithCancel(context.Background())
 	fmt.Println(reqs)
+	var response yubicloudResponse
+	var errors []error
 	for _, req := range reqs {
-		go c.doRequest(ctx, req, responseChannel)
+		go c.doRequest(ctx, req, responseChannel, errorChannel)
 	}
-	fmt.Println(<-responseChannel)
-	cancel()
-
+	for i := 0; i < len(c.apiServers); i++ {
+		select {
+		case response = <-responseChannel:
+			cancel()
+			break
+		case err := <-errorChannel:
+			errors = append(errors, err)
+		}
+	}
+	for _, err := range errors {
+		fmt.Println(err)
+	}
+	if response.OTP == OTP && response.status == "OK" {
+		return true, nil
+	}
 	return false, nil
 }
 
-func (c *Client) doRequest(ctx context.Context, req yubicloudRequest, responseChannel chan<- yubicloudResponse) {
+func (c *Client) doRequest(ctx context.Context, req yubicloudRequest, responseChannel chan<- yubicloudResponse, errorChannel chan<- error) {
 	response, err := http.Get(req.URL)
 	if err != nil {
-		panic(err)
+		errorChannel <- fmt.Errorf("Couldn't contact server %s", req.apiServer)
+		return
 	}
 	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		errorChannel <- fmt.Errorf("Status was not 200 from server %s", req.apiServer)
+	}
 	resp, err := parseResponse(response.Body)
 	if err != nil {
 		panic(err)
@@ -94,7 +113,8 @@ func (c *Client) buildRequests(OTP string) ([]yubicloudRequest, error) {
 	var reqs []yubicloudRequest
 	for _, server := range c.apiServers {
 		reqs = append(reqs, yubicloudRequest{
-			URL: server + c.uri + "?" + "id=" + c.apiAccount + "&nonce=hejkalleankaboll&otp=" + OTP,
+			URL:       server + c.uri + "?" + "id=" + c.apiAccount + "&nonce=hejkalleankaboll&otp=" + OTP,
+			apiServer: server,
 		})
 
 	}
@@ -103,7 +123,8 @@ func (c *Client) buildRequests(OTP string) ([]yubicloudRequest, error) {
 }
 
 type yubicloudRequest struct {
-	URL string
+	URL       string
+	apiServer string
 }
 
 type yubicloudResponse struct {
