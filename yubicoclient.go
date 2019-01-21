@@ -3,6 +3,10 @@ package yubicoclient
 import (
 	"bufio"
 	"context"
+	"crypto/hmac"
+	"crypto/sha1"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +20,7 @@ type Client struct {
 	apiSecret  string
 	apiServers []string
 	uri        string
+	sl         int
 }
 
 // New returns a new instance of a Client
@@ -37,14 +42,23 @@ func DefaultClient(apiAccount string, apiSecret string) (*Client, error) {
 	return yc, nil
 }
 
+// SetSL śets the required servicelevel
+func (c *Client) SetSL(sl int) error {
+	if sl < 0 || sl > 100 {
+		return errors.New("Service level must be between 0 and 100")
+	}
+	c.sl = sl
+	return nil
+}
+
 // Verify verifies the OTP caught from the yubikey, it returns true if the key is valid and false if it's not
-func (c *Client) Verify(OTP string) (bool, error) {
+func (c *Client) Verify(otp string) (bool, error) {
 	// Build the requests
-	reqs, _ := c.buildRequests(OTP)
+	reqs, _ := c.buildRequests(otp)
 	responseChannel := make(chan yubicloudResponse)
 	errorChannel := make(chan error)
 	ctx, cancel := context.WithCancel(context.Background())
-	fmt.Println(reqs)
+	// fmt.Println(reqs)
 	var response yubicloudResponse
 	var errors []error
 	for _, req := range reqs {
@@ -53,26 +67,26 @@ func (c *Client) Verify(OTP string) (bool, error) {
 	for i := 0; i < len(c.apiServers); i++ {
 		select {
 		case response = <-responseChannel:
-			cancel()
 			break
 		case err := <-errorChannel:
 			errors = append(errors, err)
 		}
 	}
+	cancel()
 	if len(errors) == len(c.apiServers) {
-		fmt.Println("No servers responded with status 200")
+		return false, fmt.Errorf("No servers replied with status 200")
 	}
 	for _, err := range errors {
 		fmt.Println(err)
 	}
-	if response.OTP == OTP && response.status == "OK" {
+	if response.otp == otp && response.status == "OK" {
 		return true, nil
 	}
 	return false, nil
 }
 
 func (c *Client) doRequest(ctx context.Context, req yubicloudRequest, responseChannel chan<- yubicloudResponse, errorChannel chan<- error) {
-	response, err := http.Get(req.URL)
+	response, err := http.Get(req.getURL())
 	if err != nil {
 		errorChannel <- fmt.Errorf("Couldn't contact server %s", req.apiServer)
 		return
@@ -101,23 +115,28 @@ func parseResponse(r io.Reader) (yubicloudResponse, error) {
 		sl = 0
 	}
 	response := yubicloudResponse{
-		OTP:       values["otp"],
+		otp:       values["otp"],
 		status:    values["status"],
 		hmac:      values["h"],
 		timestamp: values["t"],
 		nonce:     values["nonce"],
 		sl:        sl,
 	}
+	fmt.Println(response)
 	return response, nil
 
 }
 
-func (c *Client) buildRequests(OTP string) ([]yubicloudRequest, error) {
+func (c *Client) buildRequests(otp string) ([]yubicloudRequest, error) {
 	var reqs []yubicloudRequest
 	for _, server := range c.apiServers {
 		reqs = append(reqs, yubicloudRequest{
-			URL:       server + c.uri + "?" + "id=" + c.apiAccount + "&nonce=hejkalleankaboll&otp=" + OTP,
+			client:    c,
 			apiServer: server,
+			uri:       c.uri,
+			otp:       otp,
+			nonce:     "hejkalleankaboll",
+			timestamp: false,
 		})
 
 	}
@@ -126,15 +145,39 @@ func (c *Client) buildRequests(OTP string) ([]yubicloudRequest, error) {
 }
 
 type yubicloudRequest struct {
-	URL       string
+	client    *Client
 	apiServer string
+	uri       string
+	otp       string
+	nonce     string
+	timestamp bool
+	hmac      string
+	sl        int
+}
+
+func (ycr *yubicloudRequest) getURL() string {
+	unsignedURI := "id=" + ycr.client.apiAccount + "&nonce=" + ycr.nonce + "&otp=" + ycr.otp
+	ycr.hmac = ycr.createHMAC(unsignedURI)
+	url := ycr.apiServer + ycr.uri + "?" + unsignedURI + "&h=" + ycr.hmac
+	fmt.Println(url)
+	return url
+}
+
+func (ycr *yubicloudRequest) createHMAC(unsignedURI string) string {
+	decodedKey, _ := base64.StdEncoding.DecodeString(ycr.client.apiSecret)
+	h := hmac.New(sha1.New, []byte(decodedKey))
+	h.Write([]byte(unsignedURI))
+	ba := h.Sum(nil)
+	sEnc := base64.StdEncoding.EncodeToString(ba)
+	return sEnc
+
 }
 
 type yubicloudResponse struct {
 	hmac      string
-	timestamp string
-	OTP       string
 	nonce     string
+	otp       string
 	sl        int // SyncLevel
 	status    string
+	timestamp string
 }
