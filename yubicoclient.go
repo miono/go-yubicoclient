@@ -59,9 +59,12 @@ func (c *Client) Verify(OTP string) (bool, error) {
 			errors = append(errors, err)
 		}
 	}
+<<<<<<< HEAD
 	if len(errors) == len(c.apiServers) {
 		fmt.Println("No servers responded with status 200")
 	}
+=======
+>>>>>>> 58b8eae5653b33165c1b76a99f5512f8e56cfe8a
 	for _, err := range errors {
 		fmt.Println(err)
 	}
