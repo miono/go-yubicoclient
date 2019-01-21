@@ -10,17 +10,17 @@ import (
 	"strings"
 )
 
-// YubiClient is the client used to make requests to yubicloud
-type YubiClient struct {
+// Client is the client used to make requests to yubicloud
+type Client struct {
 	apiAccount string
 	apiSecret  string
 	apiServers []string
 	uri        string
 }
 
-// NewYubiClient returns a new instance of a YubiClient
-func NewYubiClient(apiAccount string, apiSecret string, apiServers []string, uri string) (*YubiClient, error) {
-	return &YubiClient{
+// New returns a new instance of a Client
+func New(apiAccount string, apiSecret string, apiServers []string, uri string) (*Client, error) {
+	return &Client{
 		apiAccount: apiAccount,
 		apiSecret:  apiSecret,
 		apiServers: apiServers,
@@ -28,9 +28,9 @@ func NewYubiClient(apiAccount string, apiSecret string, apiServers []string, uri
 	}, nil
 }
 
-// NewDefaultYubiClient returns a new instance of a default client with the default API-servers
-func NewDefaultYubiClient(apiAccount string, apiSecret string) (*YubiClient, error) {
-	yc, err := NewYubiClient(apiAccount, apiSecret, []string{"https://api.yubico.com", "https://api2.yubico.com"}, "/wsapi/2.0/verify")
+// NewDefaultClient returns a new instance of a default client with the default API-servers
+func NewDefaultClient(apiAccount string, apiSecret string) (*Client, error) {
+	yc, err := New(apiAccount, apiSecret, []string{"https://api.yubico.com", "https://api2.yubico.com"}, "/wsapi/2.0/verify")
 	if err != nil {
 		panic(err)
 	}
@@ -38,7 +38,7 @@ func NewDefaultYubiClient(apiAccount string, apiSecret string) (*YubiClient, err
 }
 
 // Verify verifies the OTP caught from the yubikey, it returns true if the key is valid and false if it's not
-func (yc *YubiClient) Verify(OTP string) (bool, error) {
+func (yc *Client) Verify(OTP string) (bool, error) {
 	// Build the requests
 	reqs, _ := yc.buildRequests(OTP)
 	responseChannel := make(chan yubicloudResponse)
@@ -53,7 +53,7 @@ func (yc *YubiClient) Verify(OTP string) (bool, error) {
 	return false, nil
 }
 
-func (yc *YubiClient) doRequest(ctx context.Context, req yubicloudRequest, responseChannel chan<- yubicloudResponse) {
+func (yc *Client) doRequest(ctx context.Context, req yubicloudRequest, responseChannel chan<- yubicloudResponse) {
 	response, err := http.Get(req.URL)
 	if err != nil {
 		panic(err)
@@ -90,7 +90,7 @@ func parseResponse(r io.Reader) (yubicloudResponse, error) {
 
 }
 
-func (yc *YubiClient) buildRequests(OTP string) ([]yubicloudRequest, error) {
+func (yc *Client) buildRequests(OTP string) ([]yubicloudRequest, error) {
 	var reqs []yubicloudRequest
 	for _, server := range yc.apiServers {
 		reqs = append(reqs, yubicloudRequest{
