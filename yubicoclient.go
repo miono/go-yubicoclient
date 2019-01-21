@@ -29,7 +29,7 @@ func New(apiAccount string, apiSecret string, apiServers []string, uri string) (
 }
 
 // NewDefaultClient returns a new instance of a default client with the default API-servers
-func NewDefaultClient(apiAccount string, apiSecret string) (*Client, error) {
+func DefaultClient(apiAccount string, apiSecret string) (*Client, error) {
 	yc, err := New(apiAccount, apiSecret, []string{"https://api.yubico.com", "https://api2.yubico.com"}, "/wsapi/2.0/verify")
 	if err != nil {
 		panic(err)
@@ -38,14 +38,14 @@ func NewDefaultClient(apiAccount string, apiSecret string) (*Client, error) {
 }
 
 // Verify verifies the OTP caught from the yubikey, it returns true if the key is valid and false if it's not
-func (yc *Client) Verify(OTP string) (bool, error) {
+func (c *Client) Verify(OTP string) (bool, error) {
 	// Build the requests
-	reqs, _ := yc.buildRequests(OTP)
+	reqs, _ := c.buildRequests(OTP)
 	responseChannel := make(chan yubicloudResponse)
 	ctx, cancel := context.WithCancel(context.Background())
 	fmt.Println(reqs)
 	for _, req := range reqs {
-		go yc.doRequest(ctx, req, responseChannel)
+		go c.doRequest(ctx, req, responseChannel)
 	}
 	fmt.Println(<-responseChannel)
 	cancel()
@@ -53,7 +53,7 @@ func (yc *Client) Verify(OTP string) (bool, error) {
 	return false, nil
 }
 
-func (yc *Client) doRequest(ctx context.Context, req yubicloudRequest, responseChannel chan<- yubicloudResponse) {
+func (c *Client) doRequest(ctx context.Context, req yubicloudRequest, responseChannel chan<- yubicloudResponse) {
 	response, err := http.Get(req.URL)
 	if err != nil {
 		panic(err)
@@ -90,11 +90,11 @@ func parseResponse(r io.Reader) (yubicloudResponse, error) {
 
 }
 
-func (yc *Client) buildRequests(OTP string) ([]yubicloudRequest, error) {
+func (c *Client) buildRequests(OTP string) ([]yubicloudRequest, error) {
 	var reqs []yubicloudRequest
-	for _, server := range yc.apiServers {
+	for _, server := range c.apiServers {
 		reqs = append(reqs, yubicloudRequest{
-			URL: server + yc.uri + "?" + "id=" + yc.apiAccount + "&nonce=hejkalleankaboll&otp=" + OTP,
+			URL: server + c.uri + "?" + "id=" + c.apiAccount + "&nonce=hejkalleankaboll&otp=" + OTP,
 		})
 
 	}
