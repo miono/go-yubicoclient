@@ -135,15 +135,15 @@ func parseResponse(r io.Reader, host string) (yubicloudResponse, Error) {
 	case "OK":
 		return response, nil
 	case "BAD_OTP":
-		return response, OTPError{host: host, errorMsg: "BAD_OTP"}
+		return response, OTPError{host: host, errorMsg: "BAD_OTP, this OTP isn't valid"}
 	case "REPLAYED_OTP":
-		return response, OTPError{host: host, errorMsg: "REPLAYED_OTP"}
+		return response, OTPError{host: host, errorMsg: "REPLAYED_OTP, this OTP has previously been seen by the server"}
 	case "BAD_SIGNATURE":
-		return response, ClientError{host: host, errorMsg: "BAD_SIGNATURE"}
+		return response, ClientError{host: host, errorMsg: "BAD_SIGNATURE, your id/secret is probably wrong"}
 	case "NO_SUCH_CLIENT":
-		return response, ClientError{host: host, errorMsg: "NO_SUCH_CLIENT"}
+		return response, ClientError{host: host, errorMsg: "NO_SUCH_CLIENT, the clientID doesn't exist"}
 	case "OPERATION_NOT_ALLOWED":
-		return response, ClientError{host: host, errorMsg: "OPERATION_NOT_ALLOWED"}
+		return response, ClientError{host: host, errorMsg: "OPERATION_NOT_ALLOWED, this clientID isn't allowed to verify tokens"}
 	}
 
 	fmt.Println(response)
