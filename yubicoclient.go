@@ -52,58 +52,67 @@ func (c *Client) SetSL(sl int) error {
 }
 
 // Verify verifies the OTP caught from the yubikey, it returns true if the key is valid and false if it's not
-func (c *Client) Verify(otp string) (bool, error) {
+func (c *Client) Verify(otp string) (bool, Error) {
 	// Build the requests
 	reqs, _ := c.buildRequests(otp)
 	responseChannel := make(chan yubicloudResponse)
-	errorChannel := make(chan error)
-	ctx, cancel := context.WithCancel(context.Background())
+	errorChannel := make(chan yubicloudResponse)
+	ctx, cancelContext := context.WithCancel(context.Background())
 	// fmt.Println(reqs)
 	var response yubicloudResponse
 	var errors []error
 	for _, req := range reqs {
 		go c.doRequest(ctx, req, responseChannel, errorChannel)
 	}
-	for i := 0; i < len(c.apiServers); i++ {
+LOOP:
+	for i := 0; i < len(reqs); i++ {
 		select {
 		case response = <-responseChannel:
-			break
+			break LOOP
 		case err := <-errorChannel:
-			errors = append(errors, err)
+			errors = append(errors, err.respError)
 		}
 	}
-	cancel()
+	cancelContext()
 	if len(errors) == len(c.apiServers) {
 		return false, fmt.Errorf("No servers replied with status 200")
 	}
 	for _, err := range errors {
 		fmt.Println(err)
 	}
+
 	if response.otp == otp && response.status == "OK" {
 		return true, nil
 	}
 	return false, nil
 }
 
-func (c *Client) doRequest(ctx context.Context, req yubicloudRequest, responseChannel chan<- yubicloudResponse, errorChannel chan<- error) {
+func (c *Client) doRequest(ctx context.Context, req yubicloudRequest, responseChannel chan<- yubicloudResponse, errorChannel chan<- yubicloudResponse) {
 	response, err := http.Get(req.getURL())
 	if err != nil {
-		errorChannel <- fmt.Errorf("Couldn't contact server %s", req.apiServer)
+		fmt.Println("Having problems contacting server")
+		errorChannel <- yubicloudResponse{respError: ConnectionError{host: req.apiServer, errorMsg: "Couldn't contact server"}}
 		return
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		errorChannel <- fmt.Errorf("Status was not 200 from server %s", req.apiServer)
+		fmt.Println("not getting 200")
+		errorChannel <- yubicloudResponse{respError: HTTPError{host: req.apiServer, errorMsg: strconv.Itoa(response.StatusCode)}}
+		return
 	}
-	resp, err := parseResponse(response.Body)
+	resp, err := parseResponse(response.Body, req.apiServer)
 	if err != nil {
-		panic(err)
+		errorChannel <- yubicloudResponse{respError: err}
 	}
-	responseChannel <- resp
-
+	if resp.status == "OK" {
+		responseChannel <- resp
+	} else {
+		errorChannel <- resp
+	}
+	return
 }
 
-func parseResponse(r io.Reader) (yubicloudResponse, error) {
+func parseResponse(r io.Reader, host string) (yubicloudResponse, Error) {
 	scanner := bufio.NewScanner(r)
 	values := make(map[string]string)
 	for scanner.Scan() != false {
@@ -122,6 +131,21 @@ func parseResponse(r io.Reader) (yubicloudResponse, error) {
 		nonce:     values["nonce"],
 		sl:        sl,
 	}
+	switch response.status {
+	case "OK":
+		return response, nil
+	case "BAD_OTP":
+		return response, OTPError{host: host, errorMsg: "BAD_OTP"}
+	case "REPLAYED_OTP":
+		return response, OTPError{host: host, errorMsg: "REPLAYED_OTP"}
+	case "BAD_SIGNATURE":
+		return response, ClientError{host: host, errorMsg: "BAD_SIGNATURE"}
+	case "NO_SUCH_CLIENT":
+		return response, ClientError{host: host, errorMsg: "NO_SUCH_CLIENT"}
+	case "OPERATION_NOT_ALLOWED":
+		return response, ClientError{host: host, errorMsg: "OPERATION_NOT_ALLOWED"}
+	}
+
 	fmt.Println(response)
 	return response, nil
 
@@ -159,7 +183,6 @@ func (ycr *yubicloudRequest) getURL() string {
 	unsignedURI := "id=" + ycr.client.apiAccount + "&nonce=" + ycr.nonce + "&otp=" + ycr.otp
 	ycr.hmac = ycr.createHMAC(unsignedURI)
 	url := ycr.apiServer + ycr.uri + "?" + unsignedURI + "&h=" + ycr.hmac
-	fmt.Println(url)
 	return url
 }
 
@@ -180,4 +203,50 @@ type yubicloudResponse struct {
 	sl        int // SyncLevel
 	status    string
 	timestamp string
+	respError Error
+}
+
+// Error is fulfilled by the different error-types
+type Error interface {
+	Error() string
+}
+
+// ConnectionError is emitted if it wasn't possible to contact any of the servers
+type ConnectionError struct {
+	host     string
+	errorMsg string
+}
+
+func (ce ConnectionError) Error() string {
+	return ce.errorMsg
+}
+
+// HTTPError is emitted if no server responded with HTTP OK.
+type HTTPError struct {
+	host     string
+	errorMsg string
+}
+
+func (he HTTPError) Error() string {
+	return he.errorMsg
+}
+
+// OTPError is emitted if the OTP supplied wasn't valid
+type OTPError struct {
+	host     string
+	errorMsg string
+}
+
+func (oe OTPError) Error() string {
+	return oe.errorMsg
+}
+
+// ClientError is emitted if the client-ID or client-secret wasn't valid.
+type ClientError struct {
+	host     string
+	errorMsg string
+}
+
+func (ce ClientError) Error() string {
+	return ce.errorMsg
 }
