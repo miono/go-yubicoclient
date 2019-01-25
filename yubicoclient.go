@@ -7,7 +7,6 @@ import (
 	"crypto/sha1"
 	"encoding/base64"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -35,7 +34,7 @@ func New(apiAccount string, apiSecret string, apiServers []string, uri string) (
 
 // DefaultClient returns a new instance of a default client with the default API-servers
 func DefaultClient(apiAccount string, apiSecret string) (*Client, error) {
-	yc, err := New(apiAccount, apiSecret, []string{"http://flaffapuppakungballe.com", "http://lagga.se", "https://api.yubico.com", "https://api2.yubico.com", "https://api3.yubico.com", "https://api4.yubico.com", "https://api5.yubico.com"}, "/wsapi/2.0/verify")
+	yc, err := New(apiAccount, apiSecret, []string{"http://fluffabuggaboo.dk", "http://lagga.se", "https://api.yubico.com", "https://api2.yubico.com", "https://api3.yubico.com", "https://api4.yubico.com", "https://api5.yubico.com"}, "/wsapi/2.0/verify")
 	if err != nil {
 		panic(err)
 	}
@@ -58,9 +57,8 @@ func (c *Client) Verify(otp string) (bool, Error) {
 	responseChannel := make(chan yubicloudResponse)
 	errorChannel := make(chan yubicloudResponse)
 	ctx, cancelContext := context.WithCancel(context.Background())
-	// fmt.Println(reqs)
 	var response yubicloudResponse
-	var errors []error
+	var errors []yubicloudResponse
 	for _, req := range reqs {
 		go c.doRequest(ctx, req, responseChannel, errorChannel)
 	}
@@ -70,15 +68,15 @@ LOOP:
 		case response = <-responseChannel:
 			break LOOP
 		case err := <-errorChannel:
-			errors = append(errors, err.respError)
+			errors = append(errors, err)
 		}
 	}
 	cancelContext()
+	// At this point we have one response in response and n errors in the errors-slice
+
+	// Checking if all our requests rendered errors
 	if len(errors) == len(c.apiServers) {
-		return false, fmt.Errorf("No servers replied with status 200")
-	}
-	for _, err := range errors {
-		fmt.Println(err)
+		return false, decideError(errors)
 	}
 
 	if response.otp == otp && response.status == "OK" {
@@ -90,19 +88,17 @@ LOOP:
 func (c *Client) doRequest(ctx context.Context, req yubicloudRequest, responseChannel chan<- yubicloudResponse, errorChannel chan<- yubicloudResponse) {
 	response, err := http.Get(req.getURL())
 	if err != nil {
-		fmt.Println("Having problems contacting server")
-		errorChannel <- yubicloudResponse{respError: ConnectionError{host: req.apiServer, errorMsg: "Couldn't contact server"}}
+		errorChannel <- yubicloudResponse{respError: ConnectionError{host: req.apiServer, severity: 9, errorMsg: "Couldn't contact server"}}
 		return
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		fmt.Println("not getting 200")
-		errorChannel <- yubicloudResponse{respError: HTTPError{host: req.apiServer, errorMsg: strconv.Itoa(response.StatusCode)}}
+		errorChannel <- yubicloudResponse{respError: HTTPError{host: req.apiServer, severity: 8, errorMsg: strconv.Itoa(response.StatusCode)}}
 		return
 	}
-	resp, err := parseResponse(response.Body, req.apiServer)
-	if err != nil {
-		errorChannel <- yubicloudResponse{respError: err}
+	resp, err2 := parseResponse(response.Body)
+	if err2 != nil {
+		errorChannel <- yubicloudResponse{respError: err2}
 	}
 	if resp.status == "OK" {
 		responseChannel <- resp
@@ -112,7 +108,7 @@ func (c *Client) doRequest(ctx context.Context, req yubicloudRequest, responseCh
 	return
 }
 
-func parseResponse(r io.Reader, host string) (yubicloudResponse, Error) {
+func parseResponse(r io.Reader) (yubicloudResponse, Error) {
 	scanner := bufio.NewScanner(r)
 	values := make(map[string]string)
 	for scanner.Scan() != false {
@@ -135,18 +131,20 @@ func parseResponse(r io.Reader, host string) (yubicloudResponse, Error) {
 	case "OK":
 		return response, nil
 	case "BAD_OTP":
-		return response, OTPError{host: host, errorMsg: "BAD_OTP, this OTP isn't valid"}
+		response.respError = OTPError{severity: 1, errorMsg: "BAD_OTP, this OTP isn't valid"}
 	case "REPLAYED_OTP":
-		return response, OTPError{host: host, errorMsg: "REPLAYED_OTP, this OTP has previously been seen by the server"}
+		response.respError = OTPError{severity: 2, errorMsg: "REPLAYED_OTP, this OTP has previously been seen by the server"}
+	case "REPLAYED_REQUEST":
+		response.respError = OTPError{severity: 3, errorMsg: "REPLAYED_REQUEST, this OTP has previously been seen by the server"}
 	case "BAD_SIGNATURE":
-		return response, ClientError{host: host, errorMsg: "BAD_SIGNATURE, your id/secret is probably wrong"}
+		response.respError = ClientError{severity: 4, errorMsg: "BAD_SIGNATURE, your id/secret is probably wrong"}
 	case "NO_SUCH_CLIENT":
-		return response, ClientError{host: host, errorMsg: "NO_SUCH_CLIENT, the clientID doesn't exist"}
+		response.respError = ClientError{severity: 5, errorMsg: "NO_SUCH_CLIENT, the clientID doesn't exist"}
 	case "OPERATION_NOT_ALLOWED":
-		return response, ClientError{host: host, errorMsg: "OPERATION_NOT_ALLOWED, this clientID isn't allowed to verify tokens"}
+		response.respError = ClientError{severity: 6, errorMsg: "OPERATION_NOT_ALLOWED, this clientID isn't allowed to verify tokens"}
+	default:
+		response.respError = UnknownError{severity: 7, errorMsg: "Unknown status from server"}
 	}
-
-	fmt.Println(response)
 	return response, nil
 
 }
@@ -209,10 +207,12 @@ type yubicloudResponse struct {
 // Error is fulfilled by the different error-types
 type Error interface {
 	Error() string
+	Severity() int
 }
 
 // ConnectionError is emitted if it wasn't possible to contact any of the servers
 type ConnectionError struct {
+	severity int
 	host     string
 	errorMsg string
 }
@@ -221,8 +221,13 @@ func (ce ConnectionError) Error() string {
 	return ce.errorMsg
 }
 
+func (ce ConnectionError) Severity() int {
+	return ce.severity
+}
+
 // HTTPError is emitted if no server responded with HTTP OK.
 type HTTPError struct {
+	severity int
 	host     string
 	errorMsg string
 }
@@ -231,9 +236,13 @@ func (he HTTPError) Error() string {
 	return he.errorMsg
 }
 
+func (he HTTPError) Severity() int {
+	return he.severity
+}
+
 // OTPError is emitted if the OTP supplied wasn't valid
 type OTPError struct {
-	host     string
+	severity int
 	errorMsg string
 }
 
@@ -241,12 +250,47 @@ func (oe OTPError) Error() string {
 	return oe.errorMsg
 }
 
+func (oe OTPError) Severity() int {
+	return oe.severity
+}
+
 // ClientError is emitted if the client-ID or client-secret wasn't valid.
 type ClientError struct {
-	host     string
+	severity int
 	errorMsg string
 }
 
 func (ce ClientError) Error() string {
 	return ce.errorMsg
+}
+
+func (ce ClientError) Severity() int {
+	return ce.severity
+}
+
+// UnknownError happens when we get a reply from the servers with a status we don't recognize
+type UnknownError struct {
+	severity int
+	errorMsg string
+}
+
+func (ue UnknownError) Error() string {
+	return ue.errorMsg
+}
+
+func (ue UnknownError) Severity() int {
+	return ue.severity
+}
+
+func decideError(ycrs []yubicloudResponse) Error {
+	leastSevere := yubicloudResponse{respError: UnknownError{severity: 100}}
+
+	for _, ycr := range ycrs {
+		if ycr.respError.Severity() < leastSevere.respError.Severity() {
+			leastSevere = ycr
+		}
+
+	}
+	return leastSevere.respError
+
 }
