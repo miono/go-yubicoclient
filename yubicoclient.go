@@ -207,7 +207,7 @@ type yubicloudResponse struct {
 // Error is fulfilled by the different error-types
 type Error interface {
 	Error() string
-	Severity() int
+	getSeverity() int
 }
 
 // ConnectionError is emitted if it wasn't possible to contact any of the servers
@@ -221,7 +221,7 @@ func (ce ConnectionError) Error() string {
 	return ce.errorMsg
 }
 
-func (ce ConnectionError) Severity() int {
+func (ce ConnectionError) getSeverity() int {
 	return ce.severity
 }
 
@@ -236,7 +236,7 @@ func (he HTTPError) Error() string {
 	return he.errorMsg
 }
 
-func (he HTTPError) Severity() int {
+func (he HTTPError) getSeverity() int {
 	return he.severity
 }
 
@@ -250,7 +250,7 @@ func (oe OTPError) Error() string {
 	return oe.errorMsg
 }
 
-func (oe OTPError) Severity() int {
+func (oe OTPError) getSeverity() int {
 	return oe.severity
 }
 
@@ -264,7 +264,7 @@ func (ce ClientError) Error() string {
 	return ce.errorMsg
 }
 
-func (ce ClientError) Severity() int {
+func (ce ClientError) getSeverity() int {
 	return ce.severity
 }
 
@@ -278,7 +278,7 @@ func (ue UnknownError) Error() string {
 	return ue.errorMsg
 }
 
-func (ue UnknownError) Severity() int {
+func (ue UnknownError) getSeverity() int {
 	return ue.severity
 }
 
@@ -286,7 +286,7 @@ func decideError(ycrs []yubicloudResponse) Error {
 	leastSevere := yubicloudResponse{respError: UnknownError{severity: 100}}
 
 	for _, ycr := range ycrs {
-		if ycr.respError.Severity() < leastSevere.respError.Severity() {
+		if ycr.respError.getSeverity() < leastSevere.respError.getSeverity() {
 			leastSevere = ycr
 		}
 
