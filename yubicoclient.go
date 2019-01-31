@@ -7,11 +7,11 @@ import (
 	"crypto/sha1"
 	"encoding/base64"
 	"errors"
-	"fmt"
 	"io"
 	"math/rand"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -19,7 +19,6 @@ import (
 
 func init() {
 	rand.Seed(time.Now().UnixNano())
-
 }
 
 // Client is the client used to make requests to yubicloud
@@ -95,18 +94,17 @@ LOOP:
 }
 
 func (c *Client) doRequest(ctx context.Context, req yubicloudRequest, responseChannel chan<- yubicloudResponse, errorChannel chan<- yubicloudResponse) {
-	fmt.Println(req.url.String())
 	response, err := http.Get(req.url.String())
 	if err != nil {
-		errorChannel <- yubicloudResponse{respError: ConnectionError{host: req.url.Host, severity: 9, errorMsg: "Couldn't contact server"}}
+		errorChannel <- yubicloudResponse{respError: ConnectionError{host: req.url.Host, severity: 11, errorMsg: "Couldn't contact server"}}
 		return
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		errorChannel <- yubicloudResponse{respError: HTTPError{host: req.url.Host, severity: 8, errorMsg: strconv.Itoa(response.StatusCode)}}
+		errorChannel <- yubicloudResponse{respError: HTTPError{host: req.url.Host, severity: 10, errorMsg: strconv.Itoa(response.StatusCode)}}
 		return
 	}
-	resp, err2 := parseResponse(c, response.Body)
+	resp, err2 := parseResponse(c, req, response.Body)
 	if err2 != nil {
 		errorChannel <- yubicloudResponse{respError: err2}
 	}
@@ -118,13 +116,34 @@ func (c *Client) doRequest(ctx context.Context, req yubicloudRequest, responseCh
 	return
 }
 
-func parseResponse(c *Client, r io.Reader) (yubicloudResponse, Error) {
+func parseResponse(c *Client, req yubicloudRequest, r io.Reader) (yubicloudResponse, Error) {
 	scanner := bufio.NewScanner(r)
 	values := make(map[string]string)
-	for scanner.Scan() != false {
+	for scanner.Scan() == true {
+		if scanner.Text() == "" {
+			continue
+		}
 		data := strings.Split(scanner.Text(), "=")
 		values[data[0]] = strings.Join(data[1:], "=")
 	}
+
+	if !verifyHMAC(values, c.apiSecret) {
+		response := yubicloudResponse{}
+		response.respError = MITMError{severity: 1, errorMsg: "Server HMAC wasn't correct, possible MITM-attack"}
+		return response, nil
+	}
+
+	reqVars, err := url.ParseQuery(req.url.RawQuery)
+	if err != nil {
+		panic(err)
+	}
+
+	if reqVars.Get("otp") != values["otp"] || reqVars.Get("nonce") != values["nonce"] {
+		response := yubicloudResponse{}
+		response.respError = MITMError{severity: 2, errorMsg: "Response OTP and or Nonce didn't match request, possible MITM-attack"}
+		return response, nil
+	}
+
 	sl, err := strconv.Atoi(values["sl"])
 	if err != nil {
 		sl = 0
@@ -137,23 +156,24 @@ func parseResponse(c *Client, r io.Reader) (yubicloudResponse, Error) {
 		nonce:     values["nonce"],
 		sl:        sl,
 	}
+
 	switch response.status {
 	case "OK":
 		return response, nil
 	case "BAD_OTP":
-		response.respError = OTPError{severity: 1, errorMsg: "BAD_OTP, this OTP isn't valid"}
+		response.respError = OTPError{severity: 3, errorMsg: "BAD_OTP, this OTP isn't valid"}
 	case "REPLAYED_OTP":
-		response.respError = OTPError{severity: 2, errorMsg: "REPLAYED_OTP, this OTP has previously been seen by the server"}
+		response.respError = OTPError{severity: 4, errorMsg: "REPLAYED_OTP, this OTP has previously been seen by the server"}
 	case "REPLAYED_REQUEST":
-		response.respError = OTPError{severity: 3, errorMsg: "REPLAYED_REQUEST, this OTP has previously been seen by the server"}
+		response.respError = OTPError{severity: 5, errorMsg: "REPLAYED_REQUEST, this OTP has previously been seen by the server"}
 	case "BAD_SIGNATURE":
-		response.respError = ClientError{severity: 4, errorMsg: "BAD_SIGNATURE, your id/secret is probably wrong"}
+		response.respError = ClientError{severity: 6, errorMsg: "BAD_SIGNATURE, your id/secret is probably wrong"}
 	case "NO_SUCH_CLIENT":
-		response.respError = ClientError{severity: 5, errorMsg: "NO_SUCH_CLIENT, the clientID doesn't exist"}
+		response.respError = ClientError{severity: 7, errorMsg: "NO_SUCH_CLIENT, the clientID doesn't exist"}
 	case "OPERATION_NOT_ALLOWED":
-		response.respError = ClientError{severity: 6, errorMsg: "OPERATION_NOT_ALLOWED, this clientID isn't allowed to verify tokens"}
+		response.respError = ClientError{severity: 8, errorMsg: "OPERATION_NOT_ALLOWED, this clientID isn't allowed to verify tokens"}
 	default:
-		response.respError = UnknownError{severity: 7, errorMsg: "Unknown status from server"}
+		response.respError = UnknownError{severity: 9, errorMsg: "Unknown status from server"}
 	}
 	return response, nil
 
@@ -166,7 +186,7 @@ func (c *Client) buildRequests(otp string) ([]yubicloudRequest, error) {
 		v.Add("otp", otp)
 		v.Add("nonce", generateNonce())
 		v.Add("id", c.apiAccount)
-		v.Add("h", createHMAC(v, c.apiSecret))
+		v.Add("h", createHMAC(v.Encode(), c.apiSecret))
 		req := yubicloudRequest{
 			url: url.URL{
 				Scheme:   "https",
@@ -188,7 +208,6 @@ func generateNonce() string {
 
 	for i := range output {
 		output[i] = availableChars[rand.Intn(len(availableChars))]
-
 	}
 	return string(output)
 }
@@ -198,13 +217,38 @@ type yubicloudRequest struct {
 	url    url.URL
 }
 
-func createHMAC(values url.Values, apiSecret string) string {
+func createHMAC(input string, apiSecret string) string {
 	decodedKey, _ := base64.StdEncoding.DecodeString(apiSecret)
 	h := hmac.New(sha1.New, []byte(decodedKey))
-	h.Write([]byte(values.Encode()))
+	h.Write([]byte(input))
 	ba := h.Sum(nil)
 	sEnc := base64.StdEncoding.EncodeToString(ba)
 	return sEnc
+}
+
+// verifyHMAC verifies if the HMAC sent from the server is valid
+func verifyHMAC(values map[string]string, apiSecret string) bool {
+	receivedHMAC := values["h"]
+	delete(values, "h")
+	// Sorting and stringing the values-map without h
+	var buf strings.Builder
+	keys := make([]string, 0, len(values))
+	for k := range values {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		v := values[k]
+		if buf.Len() > 0 {
+			buf.WriteByte('&')
+		}
+		buf.WriteString(k)
+		buf.WriteByte('=')
+		buf.WriteString(v)
+	}
+
+	expectedHMAC := createHMAC(buf.String(), apiSecret)
+	return receivedHMAC == expectedHMAC
 
 }
 
@@ -294,6 +338,19 @@ func (ue UnknownError) Error() string {
 
 func (ue UnknownError) getSeverity() int {
 	return ue.severity
+}
+
+type MITMError struct {
+	severity int
+	errorMsg string
+}
+
+func (me MITMError) Error() string {
+	return me.errorMsg
+}
+
+func (me MITMError) getSeverity() int {
+	return me.severity
 }
 
 func decideError(ycrs []yubicloudResponse) Error {
