@@ -7,11 +7,20 @@ import (
 	"crypto/sha1"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
+
+func init() {
+	rand.Seed(time.Now().UnixNano())
+
+}
 
 // Client is the client used to make requests to yubicloud
 type Client struct {
@@ -34,7 +43,7 @@ func New(apiAccount string, apiSecret string, apiServers []string, uri string) (
 
 // DefaultClient returns a new instance of a default client with the default API-servers
 func DefaultClient(apiAccount string, apiSecret string) (*Client, error) {
-	yc, err := New(apiAccount, apiSecret, []string{"http://fluffabuggaboo.dk", "http://lagga.se", "https://api.yubico.com", "https://api2.yubico.com", "https://api3.yubico.com", "https://api4.yubico.com", "https://api5.yubico.com"}, "/wsapi/2.0/verify")
+	yc, err := New(apiAccount, apiSecret, []string{"api.yubico.com", "api2.yubico.com", "api3.yubico.com", "api4.yubico.com", "api5.yubico.com"}, "/wsapi/2.0/verify")
 	if err != nil {
 		panic(err)
 	}
@@ -86,17 +95,18 @@ LOOP:
 }
 
 func (c *Client) doRequest(ctx context.Context, req yubicloudRequest, responseChannel chan<- yubicloudResponse, errorChannel chan<- yubicloudResponse) {
-	response, err := http.Get(req.getURL())
+	fmt.Println(req.url.String())
+	response, err := http.Get(req.url.String())
 	if err != nil {
-		errorChannel <- yubicloudResponse{respError: ConnectionError{host: req.apiServer, severity: 9, errorMsg: "Couldn't contact server"}}
+		errorChannel <- yubicloudResponse{respError: ConnectionError{host: req.url.Host, severity: 9, errorMsg: "Couldn't contact server"}}
 		return
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		errorChannel <- yubicloudResponse{respError: HTTPError{host: req.apiServer, severity: 8, errorMsg: strconv.Itoa(response.StatusCode)}}
+		errorChannel <- yubicloudResponse{respError: HTTPError{host: req.url.Host, severity: 8, errorMsg: strconv.Itoa(response.StatusCode)}}
 		return
 	}
-	resp, err2 := parseResponse(response.Body)
+	resp, err2 := parseResponse(c, response.Body)
 	if err2 != nil {
 		errorChannel <- yubicloudResponse{respError: err2}
 	}
@@ -108,7 +118,7 @@ func (c *Client) doRequest(ctx context.Context, req yubicloudRequest, responseCh
 	return
 }
 
-func parseResponse(r io.Reader) (yubicloudResponse, Error) {
+func parseResponse(c *Client, r io.Reader) (yubicloudResponse, Error) {
 	scanner := bufio.NewScanner(r)
 	values := make(map[string]string)
 	for scanner.Scan() != false {
@@ -152,42 +162,46 @@ func parseResponse(r io.Reader) (yubicloudResponse, Error) {
 func (c *Client) buildRequests(otp string) ([]yubicloudRequest, error) {
 	var reqs []yubicloudRequest
 	for _, server := range c.apiServers {
-		reqs = append(reqs, yubicloudRequest{
-			client:    c,
-			apiServer: server,
-			uri:       c.uri,
-			otp:       otp,
-			nonce:     "hejkalleankaboll",
-			timestamp: false,
-		})
+		v := url.Values{}
+		v.Add("otp", otp)
+		v.Add("nonce", generateNonce())
+		v.Add("id", c.apiAccount)
+		v.Add("h", createHMAC(v, c.apiSecret))
+		req := yubicloudRequest{
+			url: url.URL{
+				Scheme:   "https",
+				Host:     server,
+				Path:     c.uri,
+				RawQuery: v.Encode(),
+			},
+		}
+		reqs = append(reqs, req)
+	}
+
+	return reqs, nil
+}
+
+func generateNonce() string {
+	availableChars := "abcdefghijklmnopqrstuvwxyz"
+	nonceLen := rand.Intn(24) + 16
+	output := make([]byte, nonceLen)
+
+	for i := range output {
+		output[i] = availableChars[rand.Intn(len(availableChars))]
 
 	}
-	return reqs, nil
-
+	return string(output)
 }
 
 type yubicloudRequest struct {
-	client    *Client
-	apiServer string
-	uri       string
-	otp       string
-	nonce     string
-	timestamp bool
-	hmac      string
-	sl        int
+	client *Client
+	url    url.URL
 }
 
-func (ycr *yubicloudRequest) getURL() string {
-	unsignedURI := "id=" + ycr.client.apiAccount + "&nonce=" + ycr.nonce + "&otp=" + ycr.otp
-	ycr.hmac = ycr.createHMAC(unsignedURI)
-	url := ycr.apiServer + ycr.uri + "?" + unsignedURI + "&h=" + ycr.hmac
-	return url
-}
-
-func (ycr *yubicloudRequest) createHMAC(unsignedURI string) string {
-	decodedKey, _ := base64.StdEncoding.DecodeString(ycr.client.apiSecret)
+func createHMAC(values url.Values, apiSecret string) string {
+	decodedKey, _ := base64.StdEncoding.DecodeString(apiSecret)
 	h := hmac.New(sha1.New, []byte(decodedKey))
-	h.Write([]byte(unsignedURI))
+	h.Write([]byte(values.Encode()))
 	ba := h.Sum(nil)
 	sEnc := base64.StdEncoding.EncodeToString(ba)
 	return sEnc
