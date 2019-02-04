@@ -61,6 +61,9 @@ func (c *Client) SetSL(sl int) error {
 // Verify verifies the OTP caught from the yubikey, it returns true if the key is valid and false if it's not
 func (c *Client) Verify(otp string) (bool, Error) {
 	otp = strings.ToLower(otp)
+	if !checkOTP(otp) {
+		return false, OTPError{errorMsg: "OTP wasn't in a valid format"}
+	}
 	// Build the requests
 	reqs, _ := c.buildRequests(otp)
 	responseChannel := make(chan yubicloudResponse)
@@ -251,6 +254,13 @@ func verifyHMAC(values map[string]string, apiSecret string) bool {
 	expectedHMAC := createHMAC(buf.String(), apiSecret)
 	return receivedHMAC == expectedHMAC
 
+}
+
+func checkOTP(otp string) bool {
+	if len(otp) > 48 || len(otp) < 32 {
+		return false
+	}
+	return true
 }
 
 type yubicloudResponse struct {
