@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"io"
+	"log"
 	"math/rand"
 	"net/http"
 	"net/url"
@@ -23,16 +24,19 @@ func init() {
 
 // Client is the client used to make requests to yubicloud
 type Client struct {
+	httpClient *http.Client
 	apiAccount string
 	apiSecret  string
 	apiServers []string
 	uri        string
 	sl         int
+	debug      bool
 }
 
 // New returns a new instance of a Client
 func New(apiAccount string, apiSecret string, apiServers []string, uri string) (*Client, error) {
 	return &Client{
+		httpClient: &http.Client{Timeout: time.Duration(time.Second * 5)},
 		apiAccount: apiAccount,
 		apiSecret:  apiSecret,
 		apiServers: apiServers,
@@ -40,22 +44,30 @@ func New(apiAccount string, apiSecret string, apiServers []string, uri string) (
 	}, nil
 }
 
-// DefaultClient returns a new instance of a default client with the default API-servers
+// DefaultClient returns a new instance of a default client with the default
+// API-servers
 func DefaultClient(apiAccount string, apiSecret string) (*Client, error) {
-	yc, err := New(apiAccount, apiSecret, []string{"api.yubico.com", "api2.yubico.com", "api3.yubico.com", "api4.yubico.com", "api5.yubico.com"}, "/wsapi/2.0/verify")
+	yc, err := New(apiAccount, apiSecret, []string{"api.yubico.com",
+		"api2.yubico.com", "api3.yubico.com", "api4.yubico.com",
+		"api5.yubico.com"}, "/wsapi/2.0/verify")
 	if err != nil {
 		panic(err)
 	}
 	return yc, nil
 }
 
-// SetSL śets the required servicelevel
+// SetSL sets the required servicelevel
 func (c *Client) SetSL(sl int) error {
 	if sl < 0 || sl > 100 {
 		return errors.New("Service level must be between 0 and 100")
 	}
 	c.sl = sl
 	return nil
+}
+
+// SetDebug turns on or off debugging
+func (c *Client) SetDebug(val bool) {
+	c.debug = val
 }
 
 // Verify verifies the OTP caught from the yubikey, it returns true if the key is valid and false if it's not
@@ -98,7 +110,10 @@ LOOP:
 }
 
 func (c *Client) doRequest(ctx context.Context, req yubicloudRequest, responseChannel chan<- yubicloudResponse, errorChannel chan<- yubicloudResponse) {
-	response, err := http.Get(req.url.String())
+	response, err := c.httpClient.Get(req.url.String())
+	if c.debug {
+		log.Println("Sending request to", req.url.String())
+	}
 	if err != nil {
 		errorChannel <- yubicloudResponse{respError: ConnectionError{host: req.url.Host, severity: 11, errorMsg: "Couldn't contact server"}}
 		return
@@ -351,6 +366,8 @@ func (ue UnknownError) getSeverity() int {
 	return ue.severity
 }
 
+// MITMError happens when nonce or otp isn't matching, or when the HMAC from the server is incorrect
+// even though the one we sent didn't return a BAD_SIGNATURE-error.
 type MITMError struct {
 	severity int
 	errorMsg string
