@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 func init() {
@@ -34,25 +35,22 @@ type Client struct {
 }
 
 // New returns a new instance of a Client
-func New(apiAccount string, apiSecret string, apiServers []string, uri string) (*Client, error) {
+func New(apiAccount string, apiSecret string, apiServers []string, uri string) *Client {
 	return &Client{
 		httpClient: &http.Client{Timeout: time.Duration(time.Second * 5)},
 		apiAccount: apiAccount,
 		apiSecret:  apiSecret,
 		apiServers: apiServers,
 		uri:        uri,
-	}, nil
+	}
 }
 
 // DefaultClient returns a new instance of a default client with the default
 // API-servers
 func DefaultClient(apiAccount string, apiSecret string) (*Client, error) {
-	yc, err := New(apiAccount, apiSecret, []string{"api.yubico.com",
+	yc := New(apiAccount, apiSecret, []string{"api.yubico.com",
 		"api2.yubico.com", "api3.yubico.com", "api4.yubico.com",
 		"api5.yubico.com"}, "/wsapi/2.0/verify")
-	if err != nil {
-		panic(err)
-	}
 	return yc, nil
 }
 
@@ -77,7 +75,7 @@ func (c *Client) Verify(otp string) (bool, Error) {
 		return false, OTPError{errorMsg: "OTP wasn't in a valid format"}
 	}
 	// Build the requests
-	reqs, _ := c.buildRequests(otp)
+	reqs := c.buildRequests(otp)
 	responseChannel := make(chan yubicloudResponse)
 	errorChannel := make(chan yubicloudResponse)
 	ctx, cancelContext := context.WithCancel(context.Background())
@@ -109,18 +107,18 @@ LOOP:
 	return false, nil
 }
 
-func (c *Client) doRequest(ctx context.Context, req yubicloudRequest, responseChannel chan<- yubicloudResponse, errorChannel chan<- yubicloudResponse) {
-	response, err := c.httpClient.Get(req.url.String())
+func (c *Client) doRequest(ctx context.Context, req url.URL, responseChannel chan<- yubicloudResponse, errorChannel chan<- yubicloudResponse) {
+	response, err := c.httpClient.Get(req.String())
 	if c.debug {
-		log.Println("Sending request to", req.url.String())
+		log.Println("Sending request to", req.String())
 	}
 	if err != nil {
-		errorChannel <- yubicloudResponse{respError: ConnectionError{host: req.url.Host, severity: 11, errorMsg: "Couldn't contact server"}}
+		errorChannel <- yubicloudResponse{respError: ConnectionError{host: req.Host, severity: 11, errorMsg: "Couldn't contact server"}}
 		return
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		errorChannel <- yubicloudResponse{respError: HTTPError{host: req.url.Host, severity: 10, errorMsg: strconv.Itoa(response.StatusCode)}}
+		errorChannel <- yubicloudResponse{respError: HTTPError{host: req.Host, severity: 10, errorMsg: strconv.Itoa(response.StatusCode)}}
 		return
 	}
 	resp, err2 := parseResponse(c, req, response.Body)
@@ -135,7 +133,7 @@ func (c *Client) doRequest(ctx context.Context, req yubicloudRequest, responseCh
 	return
 }
 
-func parseResponse(c *Client, req yubicloudRequest, r io.Reader) (yubicloudResponse, Error) {
+func parseResponse(c *Client, req url.URL, r io.Reader) (yubicloudResponse, Error) {
 	scanner := bufio.NewScanner(r)
 	values := make(map[string]string)
 	for scanner.Scan() == true {
@@ -152,7 +150,7 @@ func parseResponse(c *Client, req yubicloudRequest, r io.Reader) (yubicloudRespo
 		return response, nil
 	}
 
-	reqVars, err := url.ParseQuery(req.url.RawQuery)
+	reqVars, err := url.ParseQuery(req.RawQuery)
 	if err != nil {
 		panic(err)
 	}
@@ -198,26 +196,24 @@ func parseResponse(c *Client, req yubicloudRequest, r io.Reader) (yubicloudRespo
 
 }
 
-func (c *Client) buildRequests(otp string) ([]yubicloudRequest, error) {
-	var reqs []yubicloudRequest
+func (c *Client) buildRequests(otp string) []url.URL {
+	var reqs []url.URL
 	for _, server := range c.apiServers {
 		v := url.Values{}
 		v.Add("otp", otp)
 		v.Add("nonce", generateNonce())
 		v.Add("id", c.apiAccount)
 		v.Add("h", createHMAC(v.Encode(), c.apiSecret))
-		req := yubicloudRequest{
-			url: url.URL{
-				Scheme:   "https",
-				Host:     server,
-				Path:     c.uri,
-				RawQuery: v.Encode(),
-			},
+		req := url.URL{
+			Scheme:   "https",
+			Host:     server,
+			Path:     c.uri,
+			RawQuery: v.Encode(),
 		}
 		reqs = append(reqs, req)
 	}
 
-	return reqs, nil
+	return reqs
 }
 
 func generateNonce() string {
@@ -231,10 +227,11 @@ func generateNonce() string {
 	return string(output)
 }
 
-type yubicloudRequest struct {
-	client *Client
-	url    url.URL
-}
+// type yubicloudRequest struct {
+// url url.URL
+// }
+
+// type yubicloudRequest url.URL
 
 func createHMAC(input string, apiSecret string) string {
 	decodedKey, _ := base64.StdEncoding.DecodeString(apiSecret)
@@ -274,6 +271,11 @@ func verifyHMAC(values map[string]string, apiSecret string) bool {
 func checkOTP(otp string) bool {
 	if len(otp) > 48 || len(otp) < 32 {
 		return false
+	}
+	for _, char := range otp {
+		if !unicode.IsPrint(char) {
+			return false
+		}
 	}
 	return true
 }
