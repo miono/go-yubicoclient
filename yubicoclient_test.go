@@ -3,6 +3,7 @@ package yubicoclient
 import (
 	"math/rand"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -101,8 +102,20 @@ func TestBuildRequests(t *testing.T) {
 	for _, table := range tables {
 		testOutput := testClient.buildRequests(table.otp)
 		if !cmp.Equal(testOutput, table.output) {
-			// t.Errorf("buildRequests with input: %v was incorrect, got %v, want %v", table.otp, testOutput, table.output)
-			t.Errorf("\n\n%v\n\n%v", testOutput[0], testOutput[1])
+			t.Errorf("buildRequests with input: %v was incorrect, got %v, want %v", table.otp, testOutput, table.output)
+		}
+	}
+}
+
+func TestGenerateNonce(t *testing.T) {
+	testOutput := generateNonce()
+	if len(testOutput) > 40 || len(testOutput) < 16 {
+		t.Errorf("generateNonce generated a nonce of wrong length")
+	}
+	allowedChars := "abcdefghijklmnopqrstuvwxyz"
+	for _, oc := range testOutput {
+		if !strings.ContainsRune(allowedChars, oc) {
+			t.Errorf("generated nonce contained invalid character %v", oc)
 		}
 	}
 }
