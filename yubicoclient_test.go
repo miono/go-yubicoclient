@@ -1,6 +1,7 @@
 package yubicoclient
 
 import (
+	"log"
 	"math/rand"
 	"net/url"
 	"strings"
@@ -118,4 +119,47 @@ func TestGenerateNonce(t *testing.T) {
 			t.Errorf("generated nonce contained invalid character %v", oc)
 		}
 	}
+}
+
+func TestParseResponse(t *testing.T) {
+	testClient := New("1234", "secret", []string{"hej", "hoj"}, "hupp")
+	tables := []struct {
+		req      url.URL
+		response string
+		output   yubicloudResponse
+	}{
+		{
+			req: url.URL{
+				Scheme:   "https",
+				RawQuery: "otp=cbdefghijklnrtuvcbdefghijklnrtuv&nonce=abcdefghijklmnopqrstuvwxyz",
+			},
+			response: `
+h=TryezWlZK4wIH4Tohodk0FH52ow=
+t=2019-03-03T11:49:59Z0739
+otp=cbdefghijklnrtuvcbdefghijklnrtuv
+nonce=abcdefghijklmnopqrstuvwxyz
+sl=25
+status=OK
+`,
+			output: yubicloudResponse{
+				hmac:      "TryezWlZK4wIH4Tohodk0FH52ow=",
+				timestamp: "2019-03-03T11:49:59Z0739",
+				nonce:     "abcdefghijklmnopqrstuvwxyz",
+				otp:       "cbdefghijklnrtuvcbdefghijklnrtuv",
+				status:    "OK",
+				sl:        25,
+				respError: nil,
+			},
+		},
+	}
+
+	for _, table := range tables {
+		testOutput := parseResponse(testClient, table.req, strings.NewReader(table.response))
+		if !cmp.Equal(testOutput, table.output, cmp.AllowUnexported(testOutput)) {
+			log.Println(testOutput.hmac)
+			t.Errorf("parseResponse with input %v was incorrect. Got %v, want %v", table.response, testOutput, table.output)
+
+		}
+	}
+
 }
