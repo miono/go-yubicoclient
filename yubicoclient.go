@@ -141,7 +141,7 @@ func (c *Client) doRequest(ctx context.Context, req url.URL, responseChannel cha
 func parseResponse(c *Client, req url.URL, r io.Reader) yubicloudResponse {
 	scanner := bufio.NewScanner(r)
 	values := make(map[string]string)
-	for scanner.Scan() == true {
+	for scanner.Scan() {
 		if scanner.Text() == "" {
 			continue
 		}
@@ -149,21 +149,9 @@ func parseResponse(c *Client, req url.URL, r io.Reader) yubicloudResponse {
 		values[data[0]] = strings.Join(data[1:], "=")
 	}
 
-	if !verifyHMAC(values, c.apiSecret) {
-		response := yubicloudResponse{}
-		response.respError = MITMError{severity: 1, errorMsg: "Server HMAC wasn't correct, possible MITM-attack"}
-		return response
-	}
-
 	reqVars, err := url.ParseQuery(req.RawQuery)
 	if err != nil {
 		panic(err)
-	}
-
-	if reqVars.Get("otp") != values["otp"] || reqVars.Get("nonce") != values["nonce"] {
-		response := yubicloudResponse{}
-		response.respError = MITMError{severity: 2, errorMsg: "Response OTP and or Nonce didn't match request, possible MITM-attack"}
-		return response
 	}
 
 	sl, err := strconv.Atoi(values["sl"])
@@ -184,19 +172,38 @@ func parseResponse(c *Client, req url.URL, r io.Reader) yubicloudResponse {
 		return response
 	case "BAD_OTP":
 		response.respError = OTPError{severity: 3, errorMsg: "BAD_OTP, this OTP isn't valid"}
+		return response
 	case "REPLAYED_OTP":
 		response.respError = OTPError{severity: 4, errorMsg: "REPLAYED_OTP, this OTP has previously been seen by the server"}
+		return response
 	case "REPLAYED_REQUEST":
 		response.respError = OTPError{severity: 5, errorMsg: "REPLAYED_REQUEST, this OTP has previously been seen by the server"}
+		return response
 	case "BAD_SIGNATURE":
 		response.respError = ClientError{severity: 6, errorMsg: "BAD_SIGNATURE, your id/secret is probably wrong"}
+		return response
 	case "NO_SUCH_CLIENT":
 		response.respError = ClientError{severity: 7, errorMsg: "NO_SUCH_CLIENT, the clientID doesn't exist"}
+		return response
 	case "OPERATION_NOT_ALLOWED":
 		response.respError = ClientError{severity: 8, errorMsg: "OPERATION_NOT_ALLOWED, this clientID isn't allowed to verify tokens"}
+		return response
 	default:
 		response.respError = UnknownError{severity: 9, errorMsg: "Unknown status from server"}
 	}
+
+	if reqVars.Get("otp") != values["otp"] || reqVars.Get("nonce") != values["nonce"] {
+		tmpResponse := yubicloudResponse{}
+		tmpResponse.respError = MITMError{severity: 2, errorMsg: "Response OTP and or Nonce didn't match request, possible MITM-attack"}
+		return tmpResponse
+	}
+
+	if !verifyHMAC(values, c.apiSecret) {
+		tmpResponse := yubicloudResponse{}
+		tmpResponse.respError = MITMError{severity: 1, errorMsg: "Server HMAC wasn't correct, possible MITM-attack"}
+		return response
+	}
+
 	return response
 
 }
