@@ -54,6 +54,14 @@ func DefaultClient(apiAccount string, apiSecret string) (*Client, error) {
 	return yc, nil
 }
 
+func (c *Client) GetServers() string {
+	var output string
+	for _, server := range c.apiServers {
+		output = output + server
+	}
+	return output
+}
+
 // SetSL sets the required servicelevel
 func (c *Client) SetSL(sl int) error {
 	if sl < 0 || sl > 100 {
